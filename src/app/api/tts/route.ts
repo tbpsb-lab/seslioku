@@ -1,7 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 
-export const runtime = "edge";
-
 const TTS_MODEL = "gemini-2.5-flash-preview-tts";
 
 export async function POST(req: NextRequest) {
