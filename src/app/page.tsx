@@ -38,7 +38,7 @@ const SAMPLE_BOOK: Book = {
   ]
 };
 
-const DEFAULT_BRIDGE_URL = "https://happy-bags-lead.loca.lt";
+const DEFAULT_BRIDGE_URL = "https://fancy-rooms-poke.loca.lt";
 
 export default function Home() {
   const [currentBook, setCurrentBook] = useState<Book>(SAMPLE_BOOK);
