@@ -18,8 +18,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Menu,
-  X,
-  FastForward
+  X
 } from "lucide-react";
 
 interface Book {
@@ -44,125 +43,96 @@ export default function Home() {
   const [currentParagraph, setCurrentParagraph] = useState<number>(0);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [playbackRate, setPlaybackRate] = useState<number>(1.0);
-  const [voiceName, setVoiceName] = useState<"Kore" | "Puck">("Kore");
   const [theme, setTheme] = useState<"light" | "dark" | "sepia">("sepia");
   const [fontSize, setFontSize] = useState<number>(18);
-  const [sidebarOpen, setSidebarOpen] = useState<boolean>(false);
   const [settingsOpen, setSettingsOpen] = useState<boolean>(false);
-  const [apiKey, setApiKey] = useState<string>("");
   const [bookmarks, setBookmarks] = useState<{ page: number; paragraph: number }[]>([]);
-  const [sleepTimer, setSleepTimer] = useState<number | null>(null);
-  const [isLoadingAudio, setIsLoadingAudio] = useState<boolean>(false);
-
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const currentSourceRef = useRef<AudioBufferSourceNode | null>(null);
-  const audioCacheRef = useRef<Map<string, AudioBuffer>>(new Map());
+  const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [selectedVoiceIndex, setSelectedVoiceIndex] = useState<number>(0);
 
   const paragraphs = (currentBook.pages[currentPage] || "").split("\n\n").filter(Boolean);
 
-  const getAudioContext = () => {
-    if (!audioContextRef.current) {
-      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-      audioContextRef.current = new AudioCtx({ sampleRate: 24000 });
+  // Sesleri yükle
+  useEffect(() => {
+    if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
+
+    const loadVoices = () => {
+      const allVoices = window.speechSynthesis.getVoices();
+      // Türkçe sesleri öncele
+      const trVoices = allVoices.filter((v) => v.lang.startsWith("tr"));
+      const finalVoices = trVoices.length > 0 ? trVoices : allVoices;
+      setAvailableVoices(finalVoices);
+    };
+
+    loadVoices();
+    window.speechSynthesis.onvoiceschanged = loadVoices;
+
+    return () => {
+      if ("speechSynthesis" in window) {
+        window.speechSynthesis.cancel();
+      }
+    };
+  }, []);
+
+  const stopAudio = () => {
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
     }
-    if (audioContextRef.current.state === "suspended") {
-      audioContextRef.current.resume();
-    }
-    return audioContextRef.current;
+    setIsPlaying(false);
   };
 
-  const convertPcmToAudioBuffer = async (base64Pcm: string, sampleRate = 24000): Promise<AudioBuffer> => {
-    const ctx = getAudioContext();
-    const binary = atob(base64Pcm);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) {
-      bytes[i] = binary.charCodeAt(i);
+  const playParagraph = (pageIdx: number, pIdx: number) => {
+    if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+      alert("Tarayıcınız ses sentezleme (Web Speech API) özelliğini desteklemiyor.");
+      return;
     }
-    const int16Array = new Int16Array(bytes.buffer);
-    const audioBuffer = ctx.createBuffer(1, int16Array.length, sampleRate);
-    const channelData = audioBuffer.getChannelData(0);
-    for (let i = 0; i < int16Array.length; i++) {
-      channelData[i] = int16Array[i] / 32768.0;
-    }
-    return audioBuffer;
-  };
 
-  const playParagraph = async (pageIdx: number, pIdx: number) => {
-    const targetText = (currentBook.pages[pageIdx] || "").split("\n\n").filter(Boolean)[pIdx];
+    const targetList = (currentBook.pages[pageIdx] || "").split("\n\n").filter(Boolean);
+    const targetText = targetList[pIdx];
+
     if (!targetText) {
       setIsPlaying(false);
       return;
     }
 
-    if (currentSourceRef.current) {
-      currentSourceRef.current.stop();
-      currentSourceRef.current = null;
+    window.speechSynthesis.cancel();
+
+    const utterance = new SpeechSynthesisUtterance(targetText);
+    utterance.lang = "tr-TR";
+    utterance.rate = playbackRate;
+
+    if (availableVoices.length > 0 && availableVoices[selectedVoiceIndex]) {
+      utterance.voice = availableVoices[selectedVoiceIndex];
     }
 
-    setIsLoadingAudio(true);
-    const cacheKey = `${pageIdx}-${pIdx}-${voiceName}`;
-    try {
-      let buffer = audioCacheRef.current.get(cacheKey);
-      if (!buffer) {
-        const res = await fetch("/api/tts", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: targetText, voice: voiceName, apiKey }),
-        });
-
-        if (!res.ok) {
-          const errData = await res.json().catch(() => ({}));
-          throw new Error(errData.error || "Seslendirme isteği başarısız oldu.");
-        }
-
-        const data = await res.json();
-        const pcmData = data?.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-        if (!pcmData) throw new Error("Ses verisi alınamadı.");
-
-        buffer = await convertPcmToAudioBuffer(pcmData);
-        audioCacheRef.current.set(cacheKey, buffer);
-      }
-
-      setIsLoadingAudio(false);
-      const ctx = getAudioContext();
-      const source = ctx.createBufferSource();
-      source.buffer = buffer;
-      source.playbackRate.value = playbackRate;
-      source.connect(ctx.destination);
-
-      source.onended = () => {
-        if (isPlaying) {
-          if (pIdx + 1 < paragraphs.length) {
-            setCurrentParagraph(pIdx + 1);
-            playParagraph(pageIdx, pIdx + 1);
-          } else if (pageIdx + 1 < currentBook.pages.length) {
-            setCurrentPage(pageIdx + 1);
-            setCurrentParagraph(0);
-            playParagraph(pageIdx + 1, 0);
-          } else {
-            setIsPlaying(false);
-          }
-        }
-      };
-
-      currentSourceRef.current = source;
-      source.start();
+    utterance.onstart = () => {
       setIsPlaying(true);
-    } catch (err: any) {
-      console.error(err);
-      setIsLoadingAudio(false);
+    };
+
+    utterance.onend = () => {
+      if (pIdx + 1 < targetList.length) {
+        setCurrentParagraph(pIdx + 1);
+        playParagraph(pageIdx, pIdx + 1);
+      } else if (pageIdx + 1 < currentBook.pages.length) {
+        setCurrentPage(pageIdx + 1);
+        setCurrentParagraph(0);
+        playParagraph(pageIdx + 1, 0);
+      } else {
+        setIsPlaying(false);
+      }
+    };
+
+    utterance.onerror = (e) => {
+      console.error("Seslendirme hatası:", e);
       setIsPlaying(false);
-      alert(err.message || "Ses çalınırken bir hata meydana geldi.");
-    }
+    };
+
+    window.speechSynthesis.speak(utterance);
   };
 
   const togglePlay = () => {
     if (isPlaying) {
-      if (currentSourceRef.current) {
-        currentSourceRef.current.stop();
-        currentSourceRef.current = null;
-      }
-      setIsPlaying(false);
+      stopAudio();
     } else {
       playParagraph(currentPage, currentParagraph);
     }
@@ -192,6 +162,7 @@ export default function Home() {
       }
 
       if (pagesText.length > 0) {
+        stopAudio();
         setCurrentBook({
           id: file.name,
           title: file.name.replace(".pdf", ""),
@@ -199,7 +170,6 @@ export default function Home() {
         });
         setCurrentPage(0);
         setCurrentParagraph(0);
-        audioCacheRef.current.clear();
       }
     } catch (error) {
       alert("PDF dosyası okunurken bir hata oluştu.");
@@ -215,7 +185,7 @@ export default function Home() {
   const cardClasses = {
     light: "bg-zinc-50 border-zinc-200 shadow-sm",
     dark: "bg-zinc-900 border-zinc-800 shadow-lg",
-    sepia: "bg-[#f4ecd8]/60 border-[#e5d8be] shadow-sm",
+    sepia: "bg-[#f4ecd8]/70 border-[#e5d8be] shadow-sm",
   };
 
   return (
@@ -223,16 +193,12 @@ export default function Home() {
       {/* Üst Zarif Bar */}
       <header className="h-16 px-6 border-b flex items-center justify-between backdrop-blur-md sticky top-0 z-40">
         <div className="flex items-center gap-3">
-          <button
-            onClick={() => setSidebarOpen(!sidebarOpen)}
-            className="p-2 rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition"
-            title="Kitaplık & Bölümler"
-          >
-            <Menu className="w-5 h-5 opacity-70" />
-          </button>
           <div className="flex items-center gap-2 font-sans font-semibold text-sm tracking-wide">
             <Sparkles className="w-4 h-4 text-amber-500" />
             <span>SesliOku</span>
+            <span className="text-[10px] font-normal px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
+              Ücretsiz & Sınırsız
+            </span>
           </div>
         </div>
 
@@ -241,14 +207,14 @@ export default function Home() {
         </div>
 
         <div className="flex items-center gap-2">
-          <label className="cursor-pointer flex items-center gap-1.5 px-3 py-1.5 rounded-xl font-sans text-xs font-medium border hover:opacity-80 transition bg-amber-500 text-white border-amber-600">
+          <label className="cursor-pointer flex items-center gap-1.5 px-3 py-1.5 rounded-xl font-sans text-xs font-medium border hover:opacity-80 transition bg-amber-500 text-white border-amber-600 shadow-sm">
             <Upload className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">PDF Yükle</span>
             <input type="file" accept="application/pdf" className="hidden" onChange={handleFileUpload} />
           </label>
           <button
             onClick={() => setSettingsOpen(true)}
-            className="p-2 rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition"
+            className="p-2 rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition border border-transparent hover:border-black/10"
             title="Ayarlar"
           >
             <Settings className="w-5 h-5 opacity-70" />
@@ -301,6 +267,7 @@ export default function Home() {
           <button
             disabled={currentPage === 0}
             onClick={() => {
+              stopAudio();
               setCurrentPage((prev) => Math.max(0, prev - 1));
               setCurrentParagraph(0);
             }}
@@ -311,6 +278,7 @@ export default function Home() {
           <button
             disabled={currentPage >= currentBook.pages.length - 1}
             onClick={() => {
+              stopAudio();
               setCurrentPage((prev) => Math.min(currentBook.pages.length - 1, prev + 1));
               setCurrentParagraph(0);
             }}
@@ -330,8 +298,13 @@ export default function Home() {
               const rates = [0.75, 1.0, 1.25, 1.5, 2.0];
               const nextRate = rates[(rates.indexOf(playbackRate) + 1) % rates.length];
               setPlaybackRate(nextRate);
+              if (isPlaying) {
+                stopAudio();
+                playParagraph(currentPage, currentParagraph);
+              }
             }}
             className="px-2.5 py-1 rounded-xl text-xs font-semibold border hover:bg-black/5 transition"
+            title="Okuma Hızı"
           >
             {playbackRate}x
           </button>
@@ -341,50 +314,65 @@ export default function Home() {
             <button
               onClick={() => {
                 if (currentParagraph > 0) {
+                  stopAudio();
                   setCurrentParagraph(currentParagraph - 1);
                   playParagraph(currentPage, currentParagraph - 1);
                 }
               }}
               className="p-2 rounded-full hover:bg-black/5 transition opacity-70"
+              title="Önceki Paragraf"
             >
               <RotateCcw className="w-4 h-4" />
             </button>
 
             <button
               onClick={togglePlay}
-              disabled={isLoadingAudio}
               className="w-12 h-12 rounded-full bg-amber-500 text-white flex items-center justify-center hover:scale-105 transition shadow-lg shadow-amber-500/30"
+              title={isPlaying ? "Durdur" : "Sesli Oku"}
             >
-              {isLoadingAudio ? (
-                <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-              ) : isPlaying ? (
-                <Pause className="w-5 h-5" />
-              ) : (
-                <Play className="w-5 h-5 ml-0.5" />
-              )}
+              {isPlaying ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5 ml-0.5" />}
             </button>
 
             <button
               onClick={() => {
                 if (currentParagraph < paragraphs.length - 1) {
+                  stopAudio();
                   setCurrentParagraph(currentParagraph + 1);
                   playParagraph(currentPage, currentParagraph + 1);
                 }
               }}
               className="p-2 rounded-full hover:bg-black/5 transition opacity-70"
+              title="Sonraki Paragraf"
             >
               <RotateCw className="w-4 h-4" />
             </button>
           </div>
 
-          {/* Ses Karakteri */}
-          <button
-            onClick={() => setVoiceName(voiceName === "Kore" ? "Puck" : "Kore")}
-            className="flex items-center gap-1.5 px-3 py-1 rounded-xl border text-xs font-medium hover:bg-black/5 transition"
-          >
-            <Volume2 className="w-3.5 h-3.5 text-amber-500" />
-            <span>{voiceName === "Kore" ? "Kadın" : "Erkek"}</span>
-          </button>
+          {/* Ses Seçici */}
+          <div className="flex items-center gap-1.5">
+            <Volume2 className="w-3.5 h-3.5 text-amber-500 opacity-70" />
+            <select
+              value={selectedVoiceIndex}
+              onChange={(e) => {
+                setSelectedVoiceIndex(Number(e.target.value));
+                if (isPlaying) {
+                  stopAudio();
+                  playParagraph(currentPage, currentParagraph);
+                }
+              }}
+              className="bg-transparent text-xs font-medium border border-color rounded-xl px-2 py-1 max-w-[110px] truncate outline-none cursor-pointer"
+            >
+              {availableVoices.length > 0 ? (
+                availableVoices.map((v, i) => (
+                  <option key={i} value={i} className="text-zinc-900 bg-white">
+                    {v.name.replace(/Microsoft|Google/g, "").trim()} ({v.lang})
+                  </option>
+                ))
+              ) : (
+                <option value={0}>Varsayılan Ses</option>
+              )}
+            </select>
+          </div>
         </div>
       </footer>
 
@@ -393,7 +381,7 @@ export default function Home() {
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4 font-sans">
           <div className={`max-w-md w-full rounded-3xl p-6 border shadow-2xl ${cardClasses[theme]}`}>
             <div className="flex items-center justify-between mb-6">
-              <h3 className="font-semibold text-base">Okuma & Ses Ayarları</h3>
+              <h3 className="font-semibold text-base">Görünüm Ayarları</h3>
               <button onClick={() => setSettingsOpen(false)} className="p-1 rounded-lg hover:bg-black/5">
                 <X className="w-5 h-5 opacity-60" />
               </button>
@@ -429,15 +417,8 @@ export default function Home() {
                 />
               </div>
 
-              <div>
-                <label className="block text-xs font-semibold opacity-70 mb-1">Gemini API Anahtarı (İsteğe Bağlı)</label>
-                <input
-                  type="password"
-                  placeholder="AIzaSy..."
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                  className="w-full p-2.5 rounded-xl border bg-transparent text-xs"
-                />
+              <div className="p-3 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-800 dark:text-emerald-300">
+                🌱 <strong>Sıfır Kota & Ücretsiz:</strong> Seslendirme tamamen cihazınızın yerel tarayıcı motoru (Web Speech API) üzerinden çalışır; hiçbir harici API anahtarı veya kota tüketimi yapılmaz.
               </div>
             </div>
           </div>
