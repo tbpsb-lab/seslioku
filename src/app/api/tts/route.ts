@@ -1,67 +1,49 @@
 import { NextRequest, NextResponse } from "next/server";
-
-const TTS_MODEL = "gemini-2.5-flash-preview-tts";
+import { MsEdgeTTS, OUTPUT_FORMAT } from "msedge-tts";
 
 export async function POST(req: NextRequest) {
   try {
-    const { text, voice = "Kore", apiKey: userApiKey } = await req.json();
-
-    const apiKey = (userApiKey || process.env.GEMINI_API_KEY || "").trim();
-    if (!apiKey) {
-      return NextResponse.json(
-        { error: "Gemini API anahtarı bulunamadı. Lütfen Ayarlar bölümünden girin veya Vercel ortam değişkeni ekleyin." },
-        { status: 400 }
-      );
-    }
+    const { text, voice = "tr-TR-EmelNeural", rate = 1.0 } = await req.json();
 
     if (!text || typeof text !== "string") {
       return NextResponse.json({ error: "Geçerli bir metin girilmedi." }, { status: 400 });
     }
 
-    const genderTerm = voice === "Puck" ? "erkek" : "kadın";
-    const promptText = `Sen profesyonel bir sesli kitap seslendiricisisin. Aşağıdaki metni HİÇBİR KELİME, CÜMLE VEYA DİPNOTU ATLAMADAN, eksiksiz, harfi harfine, doğal ve akıcı bir Türkçe ${genderTerm} sesiyle seslendir.
+    const voiceName = voice === "erkek" || voice === "tr-TR-AhmetNeural" 
+      ? "tr-TR-AhmetNeural" 
+      : "tr-TR-EmelNeural";
 
-ÖNEMLİ SESLENDİRME KURALLARI:
-1. Metin "[Bölüm Başlığı: ...]" ile başlıyorsa, köşeli parantez içindeki "Bölüm Başlığı:" kelimesini söylemeden doğrudan başlığın kendisini dingin bir başlık tonlamasıyla oku, ardından BİR NEFESLİK BELİRGİN BİR DURAKLAMA (yaklaşık 1 saniye sessizlik) bırak ve sonra ana metne geç.
-2. Metinde geçen tüm "Dipnot:" bölümlerini, kaynakça ve yayın bilgilerini, yabancı/özgün terimleri ve tırnak içindeki tüm ifadeleri ASLA ATLAMADAN, aynen ve sırasıyla seslendir; dipnot bittiğinde "Ana metin:" kelimesini söylemeden kısa bir nefes verip normal metne devam et.
-3. Parantez içi yaş veya sayı bilgilerini (örneğin "(33)") dipnot sanma; normal cümle akışı içinde doğal olarak oku.
-4. Metinde geçen yabancı kişi, yer ve filozof isimlerini özgün dillerindeki doğru telaffuzlarıyla ve her yerde tutarlı biçimde seslendir.
+    const tts = new MsEdgeTTS();
+    await tts.setMetadata(voiceName, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
 
-Metin:
-${text}`;
+    // Hız ayarı (Prosody: +0%, +20%, -20% vb.)
+    const ratePercent = Math.round((rate - 1.0) * 100);
+    const rateStr = ratePercent >= 0 ? `+${ratePercent}%` : `${ratePercent}%`;
 
-    const payload = {
-      contents: [{ parts: [{ text: promptText }] }],
-      generationConfig: {
-        responseModalities: ["AUDIO"],
-        speechConfig: {
-          voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } },
-        },
-      },
-      model: TTS_MODEL,
-    };
-
-    const targetUrl = `https://generativelanguage.googleapis.com/v1beta/models/${TTS_MODEL}:generateContent?key=${encodeURIComponent(apiKey)}`;
-
-    const response = await fetch(targetUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+    const { audioStream } = tts.toStream(text, {
+      rate: rateStr,
     });
 
-    if (!response.ok) {
-      const errText = await response.text();
-      return NextResponse.json(
-        { error: `Gemini API Hatası (${response.status}): ${errText}` },
-        { status: response.status }
-      );
-    }
+    const chunks: Buffer[] = [];
+    await new Promise<void>((resolve, reject) => {
+      audioStream.on("data", (chunk: Buffer) => chunks.push(chunk));
+      audioStream.on("end", () => resolve());
+      audioStream.on("error", (err: Error) => reject(err));
+    });
 
-    const data = await response.json();
-    return NextResponse.json(data);
+    const audioBuffer = Buffer.concat(chunks);
+
+    return new NextResponse(audioBuffer, {
+      status: 200,
+      headers: {
+        "Content-Type": "audio/mpeg",
+        "Cache-Control": "public, max-age=86400",
+      },
+    });
   } catch (error: any) {
+    console.error("Edge TTS hatası:", error);
     return NextResponse.json(
-      { error: error?.message || "Sunucu hatası oluştu." },
+      { error: error?.message || "Ses sentezleme sırasında bir hata oluştu." },
       { status: 500 }
     );
   }

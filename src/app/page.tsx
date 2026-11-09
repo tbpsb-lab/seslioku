@@ -10,15 +10,12 @@ import {
   BookOpen,
   Settings,
   Bookmark,
-  Sun,
-  Moon,
   Volume2,
-  Clock,
   Sparkles,
   ChevronLeft,
   ChevronRight,
-  Menu,
-  X
+  X,
+  Loader2
 } from "lucide-react";
 
 interface Book {
@@ -42,51 +39,29 @@ export default function Home() {
   const [currentPage, setCurrentPage] = useState<number>(0);
   const [currentParagraph, setCurrentParagraph] = useState<number>(0);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
+  const [isLoading, setIsLoading] = useState<boolean>(false);
   const [playbackRate, setPlaybackRate] = useState<number>(1.0);
+  const [selectedVoice, setSelectedVoice] = useState<"tr-TR-EmelNeural" | "tr-TR-AhmetNeural">("tr-TR-EmelNeural");
   const [theme, setTheme] = useState<"light" | "dark" | "sepia">("sepia");
   const [fontSize, setFontSize] = useState<number>(18);
   const [settingsOpen, setSettingsOpen] = useState<boolean>(false);
   const [bookmarks, setBookmarks] = useState<{ page: number; paragraph: number }[]>([]);
-  const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
-  const [selectedVoiceIndex, setSelectedVoiceIndex] = useState<number>(0);
+
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioCacheRef = useRef<Map<string, string>>(new Map());
 
   const paragraphs = (currentBook.pages[currentPage] || "").split("\n\n").filter(Boolean);
 
-  // Sesleri yükle
-  useEffect(() => {
-    if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
-
-    const loadVoices = () => {
-      const allVoices = window.speechSynthesis.getVoices();
-      // Türkçe sesleri öncele
-      const trVoices = allVoices.filter((v) => v.lang.startsWith("tr"));
-      const finalVoices = trVoices.length > 0 ? trVoices : allVoices;
-      setAvailableVoices(finalVoices);
-    };
-
-    loadVoices();
-    window.speechSynthesis.onvoiceschanged = loadVoices;
-
-    return () => {
-      if ("speechSynthesis" in window) {
-        window.speechSynthesis.cancel();
-      }
-    };
-  }, []);
-
   const stopAudio = () => {
-    if (typeof window !== "undefined" && "speechSynthesis" in window) {
-      window.speechSynthesis.cancel();
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
     }
     setIsPlaying(false);
+    setIsLoading(false);
   };
 
-  const playParagraph = (pageIdx: number, pIdx: number) => {
-    if (typeof window === "undefined" || !("speechSynthesis" in window)) {
-      alert("Tarayıcınız ses sentezleme (Web Speech API) özelliğini desteklemiyor.");
-      return;
-    }
-
+  const playParagraph = async (pageIdx: number, pIdx: number) => {
     const targetList = (currentBook.pages[pageIdx] || "").split("\n\n").filter(Boolean);
     const targetText = targetList[pIdx];
 
@@ -95,39 +70,63 @@ export default function Home() {
       return;
     }
 
-    window.speechSynthesis.cancel();
+    stopAudio();
+    setIsLoading(true);
 
-    const utterance = new SpeechSynthesisUtterance(targetText);
-    utterance.lang = "tr-TR";
-    utterance.rate = playbackRate;
+    const cacheKey = `${selectedVoice}-${playbackRate}-${targetText}`;
+    try {
+      let audioUrl = audioCacheRef.current.get(cacheKey);
 
-    if (availableVoices.length > 0 && availableVoices[selectedVoiceIndex]) {
-      utterance.voice = availableVoices[selectedVoiceIndex];
-    }
+      if (!audioUrl) {
+        const response = await fetch("/api/tts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            text: targetText,
+            voice: selectedVoice,
+            rate: playbackRate,
+          }),
+        });
 
-    utterance.onstart = () => {
-      setIsPlaying(true);
-    };
+        if (!response.ok) {
+          throw new Error("Ses sentezleme yanıt vermedi.");
+        }
 
-    utterance.onend = () => {
-      if (pIdx + 1 < targetList.length) {
-        setCurrentParagraph(pIdx + 1);
-        playParagraph(pageIdx, pIdx + 1);
-      } else if (pageIdx + 1 < currentBook.pages.length) {
-        setCurrentPage(pageIdx + 1);
-        setCurrentParagraph(0);
-        playParagraph(pageIdx + 1, 0);
-      } else {
-        setIsPlaying(false);
+        const blob = await response.blob();
+        audioUrl = URL.createObjectURL(blob);
+        audioCacheRef.current.set(cacheKey, audioUrl);
       }
-    };
 
-    utterance.onerror = (e) => {
-      console.error("Seslendirme hatası:", e);
+      setIsLoading(false);
+
+      if (!audioRef.current) {
+        audioRef.current = new Audio();
+      }
+
+      audioRef.current.src = audioUrl;
+      audioRef.current.playbackRate = playbackRate;
+
+      audioRef.current.onended = () => {
+        if (pIdx + 1 < targetList.length) {
+          setCurrentParagraph(pIdx + 1);
+          playParagraph(pageIdx, pIdx + 1);
+        } else if (pageIdx + 1 < currentBook.pages.length) {
+          setCurrentPage(pageIdx + 1);
+          setCurrentParagraph(0);
+          playParagraph(pageIdx + 1, 0);
+        } else {
+          setIsPlaying(false);
+        }
+      };
+
+      await audioRef.current.play();
+      setIsPlaying(true);
+    } catch (err: any) {
+      console.error("Çalma hatası:", err);
+      setIsLoading(false);
       setIsPlaying(false);
-    };
-
-    window.speechSynthesis.speak(utterance);
+      alert("Ses çalınamadı. Lütfen tekrar deneyin.");
+    }
   };
 
   const togglePlay = () => {
@@ -170,6 +169,7 @@ export default function Home() {
         });
         setCurrentPage(0);
         setCurrentParagraph(0);
+        audioCacheRef.current.clear();
       }
     } catch (error) {
       alert("PDF dosyası okunurken bir hata oluştu.");
@@ -197,7 +197,7 @@ export default function Home() {
             <Sparkles className="w-4 h-4 text-amber-500" />
             <span>SesliOku</span>
             <span className="text-[10px] font-normal px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
-              Ücretsiz & Sınırsız
+              Edge Neural TTS
             </span>
           </div>
         </div>
@@ -215,7 +215,7 @@ export default function Home() {
           <button
             onClick={() => setSettingsOpen(true)}
             className="p-2 rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition border border-transparent hover:border-black/10"
-            title="Ayarlar"
+            title="Görünüm Ayarları"
           >
             <Settings className="w-5 h-5 opacity-70" />
           </button>
@@ -292,7 +292,7 @@ export default function Home() {
       {/* Yüzen Şık Oynatıcı Barı (Floating Player) */}
       <footer className="sticky bottom-6 px-4 max-w-xl w-full mx-auto z-40">
         <div className={`p-4 rounded-3xl border shadow-2xl backdrop-blur-xl flex items-center justify-between font-sans ${cardClasses[theme]}`}>
-          {/* Hız */}
+          {/* Hız Seçici */}
           <button
             onClick={() => {
               const rates = [0.75, 1.0, 1.25, 1.5, 2.0];
@@ -327,10 +327,17 @@ export default function Home() {
 
             <button
               onClick={togglePlay}
+              disabled={isLoading}
               className="w-12 h-12 rounded-full bg-amber-500 text-white flex items-center justify-center hover:scale-105 transition shadow-lg shadow-amber-500/30"
               title={isPlaying ? "Durdur" : "Sesli Oku"}
             >
-              {isPlaying ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5 ml-0.5" />}
+              {isLoading ? (
+                <Loader2 className="w-5 h-5 animate-spin" />
+              ) : isPlaying ? (
+                <Pause className="w-5 h-5" />
+              ) : (
+                <Play className="w-5 h-5 ml-0.5" />
+              )}
             </button>
 
             <button
@@ -348,29 +355,26 @@ export default function Home() {
             </button>
           </div>
 
-          {/* Ses Seçici */}
+          {/* Microsoft Edge Doğal Ses Seçici: Emel (Kadın) / Ahmet (Erkek) */}
           <div className="flex items-center gap-1.5">
             <Volume2 className="w-3.5 h-3.5 text-amber-500 opacity-70" />
             <select
-              value={selectedVoiceIndex}
+              value={selectedVoice}
               onChange={(e) => {
-                setSelectedVoiceIndex(Number(e.target.value));
+                setSelectedVoice(e.target.value as any);
                 if (isPlaying) {
                   stopAudio();
                   playParagraph(currentPage, currentParagraph);
                 }
               }}
-              className="bg-transparent text-xs font-medium border border-color rounded-xl px-2 py-1 max-w-[110px] truncate outline-none cursor-pointer"
+              className="bg-transparent text-xs font-medium border border-color rounded-xl px-2 py-1 max-w-[140px] truncate outline-none cursor-pointer"
             >
-              {availableVoices.length > 0 ? (
-                availableVoices.map((v, i) => (
-                  <option key={i} value={i} className="text-zinc-900 bg-white">
-                    {v.name.replace(/Microsoft|Google/g, "").trim()} ({v.lang})
-                  </option>
-                ))
-              ) : (
-                <option value={0}>Varsayılan Ses</option>
-              )}
+              <option value="tr-TR-EmelNeural" className="text-zinc-900 bg-white">
+                👩 Emel (Kadın - Doğal)
+              </option>
+              <option value="tr-TR-AhmetNeural" className="text-zinc-900 bg-white">
+                👨 Ahmet (Erkek - Doğal)
+              </option>
             </select>
           </div>
         </div>
@@ -418,7 +422,10 @@ export default function Home() {
               </div>
 
               <div className="p-3 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-800 dark:text-emerald-300">
-                🌱 <strong>Sıfır Kota & Ücretsiz:</strong> Seslendirme tamamen cihazınızın yerel tarayıcı motoru (Web Speech API) üzerinden çalışır; hiçbir harici API anahtarı veya kota tüketimi yapılmaz.
+                🎙️ <strong>Microsoft Edge Neural TTS:</strong> 
+                <br />• <strong>Emel (Kadın):</strong> Varsayılan stüdyo kalitesinde Türkçe ses.
+                <br />• <strong>Ahmet (Erkek):</strong> Doğal tonlamalı Türkçe erkek sesi.
+                <br />Tamamen ücretsizdir, hiçbir API anahtarı veya kota tüketimi gerektirmez.
               </div>
             </div>
           </div>
