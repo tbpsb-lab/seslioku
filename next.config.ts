@@ -1,6 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  output: "export",
   turbopack: {
     rules: {
       "*.css": {
@@ -12,3 +13,4 @@ const nextConfig: NextConfig = {
 };
 
 export default nextConfig;
+

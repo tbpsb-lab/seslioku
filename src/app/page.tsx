@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
+import { synthesizeEdgeTTS } from "@/lib/edgeTts";
 import {
   Play,
   Pause,
@@ -57,6 +58,9 @@ export default function Home() {
       audioRef.current.pause();
       audioRef.current.currentTime = 0;
     }
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+    }
     setIsPlaying(false);
     setIsLoading(false);
   };
@@ -78,22 +82,7 @@ export default function Home() {
       let audioUrl = audioCacheRef.current.get(cacheKey);
 
       if (!audioUrl) {
-        const response = await fetch("/api/tts", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            text: targetText,
-            voice: selectedVoice,
-            rate: playbackRate,
-          }),
-        });
-
-        if (!response.ok) {
-          throw new Error("Ses sentezleme yanıt vermedi.");
-        }
-
-        const blob = await response.blob();
-        audioUrl = URL.createObjectURL(blob);
+        audioUrl = await synthesizeEdgeTTS(targetText, selectedVoice, playbackRate);
         audioCacheRef.current.set(cacheKey, audioUrl);
       }
 
@@ -122,10 +111,63 @@ export default function Home() {
       await audioRef.current.play();
       setIsPlaying(true);
     } catch (err: any) {
-      console.error("Çalma hatası:", err);
+      console.warn("Edge TTS bağlantı hatası, tarayıcı konuşma motoruna geçiliyor:", err);
+      // Çevrimdışı / Ağ hatası durumunda Web Speech API yedeği
+      if (typeof window !== "undefined" && "speechSynthesis" in window) {
+        window.speechSynthesis.cancel();
+        const utterance = new SpeechSynthesisUtterance(targetText);
+        utterance.lang = "tr-TR";
+        utterance.rate = playbackRate;
+
+        const voices = window.speechSynthesis.getVoices();
+        const trVoices = voices.filter((v) => v.lang.startsWith("tr"));
+        if (trVoices.length > 0) {
+          if (selectedVoice === "tr-TR-AhmetNeural") {
+            utterance.voice =
+              trVoices.find(
+                (v) =>
+                  v.name.toLowerCase().includes("ahmet") ||
+                  v.name.toLowerCase().includes("erkek") ||
+                  v.name.toLowerCase().includes("tolga")
+              ) || trVoices[0];
+          } else {
+            utterance.voice =
+              trVoices.find(
+                (v) =>
+                  v.name.toLowerCase().includes("emel") ||
+                  v.name.toLowerCase().includes("kadın") ||
+                  v.name.toLowerCase().includes("female")
+              ) || trVoices[0];
+          }
+        }
+
+        utterance.onend = () => {
+          if (pIdx + 1 < targetList.length) {
+            setCurrentParagraph(pIdx + 1);
+            playParagraph(pageIdx, pIdx + 1);
+          } else if (pageIdx + 1 < currentBook.pages.length) {
+            setCurrentPage(pageIdx + 1);
+            setCurrentParagraph(0);
+            playParagraph(pageIdx + 1, 0);
+          } else {
+            setIsPlaying(false);
+          }
+        };
+
+        utterance.onerror = () => {
+          setIsPlaying(false);
+          setIsLoading(false);
+        };
+
+        window.speechSynthesis.speak(utterance);
+        setIsPlaying(true);
+        setIsLoading(false);
+        return;
+      }
+
       setIsLoading(false);
       setIsPlaying(false);
-      alert("Ses çalınamadı. Lütfen tekrar deneyin.");
+      alert("Ses çalınamadı. Lütfen internet bağlantınızı kontrol edip tekrar deneyin.");
     }
   };
 
