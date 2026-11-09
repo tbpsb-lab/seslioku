@@ -1,7 +1,6 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
-import { synthesizeEdgeTTS } from "@/lib/edgeTts";
 import {
   Play,
   Pause,
@@ -40,32 +39,48 @@ export default function Home() {
   const [currentPage, setCurrentPage] = useState<number>(0);
   const [currentParagraph, setCurrentParagraph] = useState<number>(0);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
-  const [isLoading, setIsLoading] = useState<boolean>(false);
   const [playbackRate, setPlaybackRate] = useState<number>(1.0);
   const [selectedVoice, setSelectedVoice] = useState<"tr-TR-EmelNeural" | "tr-TR-AhmetNeural">("tr-TR-EmelNeural");
   const [theme, setTheme] = useState<"light" | "dark" | "sepia">("sepia");
   const [fontSize, setFontSize] = useState<number>(18);
   const [settingsOpen, setSettingsOpen] = useState<boolean>(false);
   const [bookmarks, setBookmarks] = useState<{ page: number; paragraph: number }[]>([]);
+  const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
 
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const audioCacheRef = useRef<Map<string, string>>(new Map());
+  // Prevent Garbage Collection in Chromium browsers
+  const activeUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
 
   const paragraphs = (currentBook.pages[currentPage] || "").split("\n\n").filter(Boolean);
 
-  const stopAudio = () => {
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current.currentTime = 0;
+  // Sesleri yükle ve hazırla
+  useEffect(() => {
+    const updateVoices = () => {
+      if (typeof window !== "undefined" && "speechSynthesis" in window) {
+        const voices = window.speechSynthesis.getVoices();
+        setAvailableVoices(voices);
+      }
+    };
+
+    updateVoices();
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      window.speechSynthesis.onvoiceschanged = updateVoices;
     }
+  }, []);
+
+  const stopAudio = () => {
     if (typeof window !== "undefined" && "speechSynthesis" in window) {
       window.speechSynthesis.cancel();
     }
+    activeUtteranceRef.current = null;
     setIsPlaying(false);
-    setIsLoading(false);
   };
 
-  const playParagraph = async (pageIdx: number, pIdx: number) => {
+  const playParagraph = (pageIdx: number, pIdx: number) => {
+    if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+      alert("Tarayıcınız sesli okuma özelliğini desteklemiyor.");
+      return;
+    }
+
     const targetList = (currentBook.pages[pageIdx] || "").split("\n\n").filter(Boolean);
     const targetText = targetList[pIdx];
 
@@ -74,101 +89,69 @@ export default function Home() {
       return;
     }
 
-    stopAudio();
-    setIsLoading(true);
+    // Önceki konuşmayı sonlandır
+    window.speechSynthesis.cancel();
 
-    const cacheKey = `${selectedVoice}-${playbackRate}-${targetText}`;
-    try {
-      let audioUrl = audioCacheRef.current.get(cacheKey);
+    const utterance = new SpeechSynthesisUtterance(targetText);
+    activeUtteranceRef.current = utterance; // Referansı sakla, GC tarafından silinmesin!
 
-      if (!audioUrl) {
-        audioUrl = await synthesizeEdgeTTS(targetText, selectedVoice, playbackRate);
-        audioCacheRef.current.set(cacheKey, audioUrl);
-      }
+    utterance.lang = "tr-TR";
+    utterance.rate = playbackRate;
 
-      setIsLoading(false);
+    // Mevcut sesler arasından en uygun Türkçe sesi seç
+    const voices = availableVoices.length > 0 ? availableVoices : window.speechSynthesis.getVoices();
+    const trVoices = voices.filter((v) => v.lang.toLowerCase().startsWith("tr"));
 
-      if (!audioRef.current) {
-        audioRef.current = new Audio();
-      }
+    if (selectedVoice === "tr-TR-AhmetNeural") {
+      // Erkek Ses Seçimi: Microsoft Ahmet Online (Natural) veya Tolga / Erkek
+      const maleVoice =
+        trVoices.find((v) => v.name.toLowerCase().includes("ahmet")) ||
+        trVoices.find((v) => v.name.toLowerCase().includes("tolga") || v.name.toLowerCase().includes("erkek") || v.name.toLowerCase().includes("male")) ||
+        trVoices[0];
 
-      audioRef.current.src = audioUrl;
-      audioRef.current.playbackRate = playbackRate;
+      if (maleVoice) utterance.voice = maleVoice;
+      utterance.pitch = 0.88; // Erkek ses derinliği
+    } else {
+      // Kadın Ses Seçimi (Varsayılan): Microsoft Emel Online (Natural) veya Kadın sesi
+      const femaleVoice =
+        trVoices.find((v) => v.name.toLowerCase().includes("emel")) ||
+        trVoices.find((v) => v.name.toLowerCase().includes("kadın") || v.name.toLowerCase().includes("female")) ||
+        trVoices[0];
 
-      audioRef.current.onended = () => {
-        if (pIdx + 1 < targetList.length) {
-          setCurrentParagraph(pIdx + 1);
-          playParagraph(pageIdx, pIdx + 1);
-        } else if (pageIdx + 1 < currentBook.pages.length) {
-          setCurrentPage(pageIdx + 1);
-          setCurrentParagraph(0);
-          playParagraph(pageIdx + 1, 0);
-        } else {
-          setIsPlaying(false);
-        }
-      };
-
-      await audioRef.current.play();
-      setIsPlaying(true);
-    } catch (err: any) {
-      console.warn("Edge TTS bağlantı hatası, tarayıcı konuşma motoruna geçiliyor:", err);
-      // Çevrimdışı / Ağ hatası durumunda Web Speech API yedeği
-      if (typeof window !== "undefined" && "speechSynthesis" in window) {
-        window.speechSynthesis.cancel();
-        const utterance = new SpeechSynthesisUtterance(targetText);
-        utterance.lang = "tr-TR";
-        utterance.rate = playbackRate;
-
-        const voices = window.speechSynthesis.getVoices();
-        const trVoices = voices.filter((v) => v.lang.startsWith("tr"));
-        if (trVoices.length > 0) {
-          if (selectedVoice === "tr-TR-AhmetNeural") {
-            utterance.voice =
-              trVoices.find(
-                (v) =>
-                  v.name.toLowerCase().includes("ahmet") ||
-                  v.name.toLowerCase().includes("erkek") ||
-                  v.name.toLowerCase().includes("tolga")
-              ) || trVoices[0];
-          } else {
-            utterance.voice =
-              trVoices.find(
-                (v) =>
-                  v.name.toLowerCase().includes("emel") ||
-                  v.name.toLowerCase().includes("kadın") ||
-                  v.name.toLowerCase().includes("female")
-              ) || trVoices[0];
-          }
-        }
-
-        utterance.onend = () => {
-          if (pIdx + 1 < targetList.length) {
-            setCurrentParagraph(pIdx + 1);
-            playParagraph(pageIdx, pIdx + 1);
-          } else if (pageIdx + 1 < currentBook.pages.length) {
-            setCurrentPage(pageIdx + 1);
-            setCurrentParagraph(0);
-            playParagraph(pageIdx + 1, 0);
-          } else {
-            setIsPlaying(false);
-          }
-        };
-
-        utterance.onerror = () => {
-          setIsPlaying(false);
-          setIsLoading(false);
-        };
-
-        window.speechSynthesis.speak(utterance);
-        setIsPlaying(true);
-        setIsLoading(false);
-        return;
-      }
-
-      setIsLoading(false);
-      setIsPlaying(false);
-      alert("Ses çalınamadı. Lütfen internet bağlantınızı kontrol edip tekrar deneyin.");
+      if (femaleVoice) utterance.voice = femaleVoice;
+      utterance.pitch = 1.12; // Kadın ses berraklığı ve tonlaması
     }
+
+    utterance.onstart = () => {
+      setIsPlaying(true);
+    };
+
+    utterance.onend = () => {
+      if (pIdx + 1 < targetList.length) {
+        setCurrentParagraph(pIdx + 1);
+        playParagraph(pageIdx, pIdx + 1);
+      } else if (pageIdx + 1 < currentBook.pages.length) {
+        setCurrentPage(pageIdx + 1);
+        setCurrentParagraph(0);
+        playParagraph(pageIdx + 1, 0);
+      } else {
+        setIsPlaying(false);
+      }
+    };
+
+    utterance.onerror = (e) => {
+      console.warn("SpeechSynthesis uyarısı:", e);
+      setIsPlaying(false);
+    };
+
+    // Chromium pause/freeze hatasını çöz
+    if (window.speechSynthesis.paused) {
+      window.speechSynthesis.resume();
+    }
+
+    // Anında konuşmaya başla
+    window.speechSynthesis.speak(utterance);
+    setIsPlaying(true);
   };
 
   const togglePlay = () => {
@@ -211,7 +194,6 @@ export default function Home() {
         });
         setCurrentPage(0);
         setCurrentParagraph(0);
-        audioCacheRef.current.clear();
       }
     } catch (error) {
       alert("PDF dosyası okunurken bir hata oluştu.");
@@ -369,13 +351,10 @@ export default function Home() {
 
             <button
               onClick={togglePlay}
-              disabled={isLoading}
               className="w-12 h-12 rounded-full bg-amber-500 text-white flex items-center justify-center hover:scale-105 transition shadow-lg shadow-amber-500/30"
               title={isPlaying ? "Durdur" : "Sesli Oku"}
             >
-              {isLoading ? (
-                <Loader2 className="w-5 h-5 animate-spin" />
-              ) : isPlaying ? (
+              {isPlaying ? (
                 <Pause className="w-5 h-5" />
               ) : (
                 <Play className="w-5 h-5 ml-0.5" />
