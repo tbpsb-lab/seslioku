@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "bridge": "node bridge.js",
+    "tunnel": "npx localtunnel --port 3005"
   },
   "dependencies": {
     "@gradio/client": "^2.7.2",

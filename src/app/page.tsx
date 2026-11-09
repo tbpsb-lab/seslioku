@@ -15,7 +15,11 @@ import {
   ChevronLeft,
   ChevronRight,
   X,
-  Loader2
+  Loader2,
+  Radio,
+  CheckCircle2,
+  AlertCircle,
+  ExternalLink
 } from "lucide-react";
 
 interface Book {
@@ -34,11 +38,14 @@ const SAMPLE_BOOK: Book = {
   ]
 };
 
+const DEFAULT_BRIDGE_URL = "https://happy-bags-lead.loca.lt";
+
 export default function Home() {
   const [currentBook, setCurrentBook] = useState<Book>(SAMPLE_BOOK);
   const [currentPage, setCurrentPage] = useState<number>(0);
   const [currentParagraph, setCurrentParagraph] = useState<number>(0);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
+  const [isLoadingAudio, setIsLoadingAudio] = useState<boolean>(false);
   const [playbackRate, setPlaybackRate] = useState<number>(1.0);
   const [selectedVoice, setSelectedVoice] = useState<"tr-TR-EmelNeural" | "tr-TR-AhmetNeural">("tr-TR-EmelNeural");
   const [theme, setTheme] = useState<"light" | "dark" | "sepia">("sepia");
@@ -47,16 +54,33 @@ export default function Home() {
   const [bookmarks, setBookmarks] = useState<{ page: number; paragraph: number }[]>([]);
   const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
 
+  // Chrome Doğal Ses Köprüsü Durumları
+  const [bridgeUrl, setBridgeUrl] = useState<string>("");
+  const [inputBridgeUrl, setInputBridgeUrl] = useState<string>("");
+  const [isBridgeActive, setIsBridgeActive] = useState<boolean>(false);
+  const [isCheckingBridge, setIsCheckingBridge] = useState<boolean>(false);
+  const [testStatus, setTestStatus] = useState<string>("");
+
+  // Ses oynatıcı referansları
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const activeUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+
+  // Tarayıcı ve ses motoru tespiti
   const hasEdgeNeural = availableVoices.some(
     (v) => v.name.toLowerCase().includes("emel") || v.name.toLowerCase().includes("ahmet")
   );
 
-  // Prevent Garbage Collection in Chromium browsers
-  const activeUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
-
   const paragraphs = (currentBook.pages[currentPage] || "").split("\n\n").filter(Boolean);
 
-  // Sesleri yükle ve hazırla
+  // Yerel depolamadan köprü adresini al ve sağlık kontrolü yap
+  useEffect(() => {
+    const savedUrl = localStorage.getItem("seslioku_bridge_url") || DEFAULT_BRIDGE_URL;
+    setBridgeUrl(savedUrl);
+    setInputBridgeUrl(savedUrl);
+    checkBridgeHealth(savedUrl);
+  }, []);
+
+  // Web Speech seslerini yükle
   useEffect(() => {
     const updateVoices = () => {
       if (typeof window !== "undefined" && "speechSynthesis" in window) {
@@ -71,20 +95,92 @@ export default function Home() {
     }
   }, []);
 
+  // Köprü bağlantısını test et
+  const checkBridgeHealth = async (urlToCheck: string) => {
+    if (!urlToCheck) {
+      setIsBridgeActive(false);
+      return false;
+    }
+    setIsCheckingBridge(true);
+    try {
+      const cleanUrl = urlToCheck.replace(/\/+$/, "");
+      const res = await fetch(`${cleanUrl}/health`, {
+        signal: AbortSignal.timeout(3000),
+        headers: { "Bypass-Tunnel-Reminder": "true" }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.status === "ok") {
+          setIsBridgeActive(true);
+          setIsCheckingBridge(false);
+          return true;
+        }
+      }
+    } catch (err) {
+      // Çevrimdışı
+    }
+    setIsBridgeActive(false);
+    setIsCheckingBridge(false);
+    return false;
+  };
+
+  const saveBridgeUrl = async () => {
+    const cleanUrl = inputBridgeUrl.trim().replace(/\/+$/, "");
+    setBridgeUrl(cleanUrl);
+    localStorage.setItem("seslioku_bridge_url", cleanUrl);
+    const ok = await checkBridgeHealth(cleanUrl);
+    setTestStatus(ok ? "✅ Köprüye başarıyla bağlanıldı!" : "❌ Köprüye ulaşılamadı. Adresi kontrol ediniz.");
+  };
+
+  const testVoiceSample = (voice: "tr-TR-EmelNeural" | "tr-TR-AhmetNeural") => {
+    if (!bridgeUrl) {
+      alert("Lütfen önce bir köprü adresi giriniz.");
+      return;
+    }
+    const cleanUrl = bridgeUrl.replace(/\/+$/, "");
+    const sampleText = voice === "tr-TR-EmelNeural"
+      ? "Merhaba! Ben Emel. Microsoft Edge'in Türkçe doğal kadın sesiyim. Google Chrome üzerinden stüdyo kalitesinde okunuyor."
+      : "Merhaba! Ben Ahmet. Microsoft Edge'in Türkçe doğal erkek sesiyim. Google Chrome üzerinden akıcı ve doğal tonlamayla okunuyor.";
+
+    const url = `${cleanUrl}/api/tts?voice=${voice}&rate=1.0&text=${encodeURIComponent(sampleText)}`;
+    
+    stopAudio();
+    setIsLoadingAudio(true);
+    
+    const audio = new Audio(url);
+    audioRef.current = audio;
+    audio.oncanplay = () => setIsLoadingAudio(false);
+    audio.onplay = () => setIsPlaying(true);
+    audio.onended = () => {
+      setIsPlaying(false);
+      setIsLoadingAudio(false);
+    };
+    audio.onerror = () => {
+      setIsPlaying(false);
+      setIsLoadingAudio(false);
+      alert("Ses çalınamadı. Lütfen köprü sunucusunun çalıştığından emin olunuz.");
+    };
+    audio.play().catch(e => {
+      console.warn("Örnek ses oynatma engellendi:", e);
+      setIsLoadingAudio(false);
+    });
+  };
+
   const stopAudio = () => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.src = "";
+    }
     if (typeof window !== "undefined" && "speechSynthesis" in window) {
       window.speechSynthesis.cancel();
     }
     activeUtteranceRef.current = null;
     setIsPlaying(false);
+    setIsLoadingAudio(false);
   };
 
+  // Paragrafı çal (Köprü aktifse köprüden, değilse veya Edge üzerindeyse yerel motordan)
   const playParagraph = (pageIdx: number, pIdx: number) => {
-    if (typeof window === "undefined" || !("speechSynthesis" in window)) {
-      alert("Tarayıcınız sesli okuma özelliğini desteklemiyor.");
-      return;
-    }
-
     const targetList = (currentBook.pages[pageIdx] || "").split("\n\n").filter(Boolean);
     const targetText = targetList[pIdx];
 
@@ -93,21 +189,77 @@ export default function Home() {
       return;
     }
 
-    // Önceki konuşmayı sonlandır
+    // 1. KÖPRÜ ÜZERİNDEN DOĞAL NÖRAL SES (Chrome için Öncelikli Yol)
+    if (isBridgeActive && bridgeUrl) {
+      stopAudio();
+      setIsLoadingAudio(true);
+
+      const cleanUrl = bridgeUrl.replace(/\/+$/, "");
+      const audioUrl = `${cleanUrl}/api/tts?voice=${selectedVoice}&rate=${playbackRate}&text=${encodeURIComponent(targetText)}`;
+
+      const audio = new Audio(audioUrl);
+      audioRef.current = audio;
+      audio.playbackRate = playbackRate;
+
+      audio.oncanplay = () => {
+        setIsLoadingAudio(false);
+      };
+
+      audio.onplay = () => {
+        setIsPlaying(true);
+        setIsLoadingAudio(false);
+      };
+
+      audio.onended = () => {
+        if (pIdx + 1 < targetList.length) {
+          setCurrentParagraph(pIdx + 1);
+          playParagraph(pageIdx, pIdx + 1);
+        } else if (pageIdx + 1 < currentBook.pages.length) {
+          setCurrentPage(pageIdx + 1);
+          setCurrentParagraph(0);
+          playParagraph(pageIdx + 1, 0);
+        } else {
+          setIsPlaying(false);
+          setIsLoadingAudio(false);
+        }
+      };
+
+      audio.onerror = (e) => {
+        console.warn("Köprü ses akışında hata oluştu, Web Speech'e geçiliyor:", e);
+        setIsLoadingAudio(false);
+        playWithWebSpeech(targetText, pageIdx, pIdx, targetList);
+      };
+
+      audio.play().catch((err) => {
+        console.warn("Otomatik oynatma engellendi, Web Speech'e geçiliyor:", err);
+        setIsLoadingAudio(false);
+        playWithWebSpeech(targetText, pageIdx, pIdx, targetList);
+      });
+      return;
+    }
+
+    // 2. YEREL WEB SPEECH MOTORU (Edge'de doğrudan Emel & Ahmet, Chrome'da yerel ses)
+    playWithWebSpeech(targetText, pageIdx, pIdx, targetList);
+  };
+
+  const playWithWebSpeech = (targetText: string, pageIdx: number, pIdx: number, targetList: string[]) => {
+    if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+      alert("Tarayıcınız sesli okuma özelliğini desteklemiyor.");
+      return;
+    }
+
     window.speechSynthesis.cancel();
 
     const utterance = new SpeechSynthesisUtterance(targetText);
-    activeUtteranceRef.current = utterance; // Referansı sakla, GC tarafından silinmesin!
+    activeUtteranceRef.current = utterance;
 
     utterance.lang = "tr-TR";
     utterance.rate = playbackRate;
 
-    // Mevcut sesler arasından en uygun Türkçe sesi seç
     const voices = availableVoices.length > 0 ? availableVoices : window.speechSynthesis.getVoices();
     const trVoices = voices.filter((v) => v.lang.toLowerCase().startsWith("tr"));
 
     if (selectedVoice === "tr-TR-AhmetNeural") {
-      // Erkek Ses Seçimi: Microsoft Ahmet Online (Natural) veya Tolga / Erkek
       const maleVoice =
         trVoices.find((v) => v.name.toLowerCase().includes("ahmet")) ||
         trVoices.find((v) => v.name.toLowerCase().includes("tolga") || v.name.toLowerCase().includes("erkek") || v.name.toLowerCase().includes("male")) ||
@@ -115,11 +267,9 @@ export default function Home() {
 
       if (maleVoice) {
         utterance.voice = maleVoice;
-        // Gerçek sinirsel ses ise doğal tonlamayı bozmamak için pitch 1.0 kalır
         utterance.pitch = maleVoice.name.toLowerCase().includes("ahmet") ? 1.0 : 0.88;
       }
     } else {
-      // Kadın Ses Seçimi (Varsayılan): Microsoft Emel Online (Natural) veya Kadın sesi
       const femaleVoice =
         trVoices.find((v) => v.name.toLowerCase().includes("emel")) ||
         trVoices.find((v) => v.name.toLowerCase().includes("kadın") || v.name.toLowerCase().includes("female")) ||
@@ -127,13 +277,13 @@ export default function Home() {
 
       if (femaleVoice) {
         utterance.voice = femaleVoice;
-        // Gerçek sinirsel ses ise doğal tonlamayı bozmamak için pitch 1.0 kalır
         utterance.pitch = femaleVoice.name.toLowerCase().includes("emel") ? 1.0 : 1.12;
       }
     }
 
     utterance.onstart = () => {
       setIsPlaying(true);
+      setIsLoadingAudio(false);
     };
 
     utterance.onend = () => {
@@ -152,14 +302,13 @@ export default function Home() {
     utterance.onerror = (e) => {
       console.warn("SpeechSynthesis uyarısı:", e);
       setIsPlaying(false);
+      setIsLoadingAudio(false);
     };
 
-    // Chromium pause/freeze hatasını çöz
     if (window.speechSynthesis.paused) {
       window.speechSynthesis.resume();
     }
 
-    // Anında konuşmaya başla
     window.speechSynthesis.speak(utterance);
     setIsPlaying(true);
   };
@@ -230,9 +379,25 @@ export default function Home() {
           <div className="flex items-center gap-2 font-sans font-semibold text-sm tracking-wide">
             <Sparkles className="w-4 h-4 text-amber-500" />
             <span>SesliOku</span>
-            <span className="text-[10px] font-normal px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
-              Edge Neural TTS
-            </span>
+            {hasEdgeNeural ? (
+              <span className="text-[10px] font-normal px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
+                Edge Doğal Sesler (Nöral)
+              </span>
+            ) : isBridgeActive ? (
+              <span className="text-[10px] font-normal px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                Chrome Doğal Köprü (Aktif)
+              </span>
+            ) : (
+              <button
+                onClick={() => setSettingsOpen(true)}
+                className="text-[10px] font-normal px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-700 dark:text-amber-400 border border-amber-500/30 hover:bg-amber-500/20 transition flex items-center gap-1"
+                title="Köprü ayarlarını açmak için tıklayınız"
+              >
+                <Radio className="w-2.5 h-2.5 text-amber-500" />
+                Chrome Köprüsünü Aç
+              </button>
+            )}
           </div>
         </div>
 
@@ -249,7 +414,7 @@ export default function Home() {
           <button
             onClick={() => setSettingsOpen(true)}
             className="p-2 rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition border border-transparent hover:border-black/10"
-            title="Görünüm Ayarları"
+            title="Ayarlar & Ses Köprüsü"
           >
             <Settings className="w-5 h-5 opacity-70" />
           </button>
@@ -260,11 +425,25 @@ export default function Home() {
       {hasEdgeNeural ? (
         <div className="bg-emerald-500/10 border-b border-emerald-500/20 px-4 py-2 text-center text-xs text-emerald-800 dark:text-emerald-300 flex items-center justify-center gap-2 font-sans font-medium">
           <Sparkles className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-          <span>Microsoft Edge Sinirsel (Neural) Ses Motoru Aktif: <strong>Emel & Ahmet (Stüdyo Kalitesi)</strong></span>
+          <span>Microsoft Edge Sinirsel Ses Motoru Aktif: <strong>Emel & Ahmet (Stüdyo Kalitesi)</strong></span>
+        </div>
+      ) : isBridgeActive ? (
+        <div className="bg-emerald-500/10 border-b border-emerald-500/20 px-4 py-2 text-center text-xs text-emerald-800 dark:text-emerald-300 flex items-center justify-center gap-2 font-sans font-medium">
+          <Sparkles className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+          <span>Google Chrome Doğal Ses Köprüsü Aktif: <strong>Emel & Ahmet Nöral Sesleri</strong> stüdyo kalitesinde çalınıyor.</span>
         </div>
       ) : (
         <div className="bg-amber-500/10 border-b border-amber-500/20 px-4 py-2 text-center text-xs text-amber-900 dark:text-amber-200 flex items-center justify-center gap-2 font-sans">
-          <span>💡 <strong>Önemli İpucu:</strong> Microsoft Edge'in ödüllü yapay zeka sesleri (<strong>Emel & Ahmet</strong>) için sayfayı <strong>Microsoft Edge</strong> tarayıcısında açınız. Chrome'da tarayıcı kısıtlaması nedeniyle sistem sesi çalınır.</span>
+          <span>
+            💡 <strong>Google Chrome'da Doğal Ses:</strong> Microsoft Edge'in ödüllü yapay zeka seslerini (<strong>Emel & Ahmet</strong>) Chrome'da dinlemek için{" "}
+            <button
+              onClick={() => setSettingsOpen(true)}
+              className="underline font-semibold hover:text-amber-600"
+            >
+              Köprü Ayarlarını Açın
+            </button>{" "}
+            veya sayfayı doğrudan <strong>Microsoft Edge</strong> ile açınız.
+          </span>
         </div>
       )}
 
@@ -373,10 +552,13 @@ export default function Home() {
 
             <button
               onClick={togglePlay}
-              className="w-12 h-12 rounded-full bg-amber-500 text-white flex items-center justify-center hover:scale-105 transition shadow-lg shadow-amber-500/30"
+              disabled={isLoadingAudio}
+              className="w-12 h-12 rounded-full bg-amber-500 text-white flex items-center justify-center hover:scale-105 transition shadow-lg shadow-amber-500/30 disabled:opacity-75"
               title={isPlaying ? "Durdur" : "Sesli Oku"}
             >
-              {isPlaying ? (
+              {isLoadingAudio ? (
+                <Loader2 className="w-5 h-5 animate-spin" />
+              ) : isPlaying ? (
                 <Pause className="w-5 h-5" />
               ) : (
                 <Play className="w-5 h-5 ml-0.5" />
@@ -398,19 +580,20 @@ export default function Home() {
             </button>
           </div>
 
-          {/* Microsoft Edge Doğal Ses Seçici: Emel (Kadın) / Ahmet (Erkek) */}
+          {/* Ses Seçici: Emel (Kadın) / Ahmet (Erkek) */}
           <div className="flex items-center gap-1.5">
             <Volume2 className="w-3.5 h-3.5 text-amber-500 opacity-70" />
             <select
               value={selectedVoice}
               onChange={(e) => {
-                setSelectedVoice(e.target.value as any);
+                const newVoice = e.target.value as any;
+                setSelectedVoice(newVoice);
                 if (isPlaying) {
                   stopAudio();
                   playParagraph(currentPage, currentParagraph);
                 }
               }}
-              className="bg-transparent text-xs font-medium border border-color rounded-xl px-2 py-1 max-w-[140px] truncate outline-none cursor-pointer"
+              className="bg-transparent text-xs font-medium border border-color rounded-xl px-2 py-1 max-w-[145px] truncate outline-none cursor-pointer"
             >
               <option value="tr-TR-EmelNeural" className="text-zinc-900 bg-white">
                 👩 Emel (Kadın - Doğal)
@@ -423,20 +606,24 @@ export default function Home() {
         </div>
       </footer>
 
-      {/* Ayarlar Modalı */}
+      {/* Ayarlar & Köprü Modalı */}
       {settingsOpen && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4 font-sans">
-          <div className={`max-w-md w-full rounded-3xl p-6 border shadow-2xl ${cardClasses[theme]}`}>
-            <div className="flex items-center justify-between mb-6">
-              <h3 className="font-semibold text-base">Görünüm Ayarları</h3>
+          <div className={`max-w-lg w-full max-h-[90vh] overflow-y-auto rounded-3xl p-6 border shadow-2xl ${cardClasses[theme]}`}>
+            <div className="flex items-center justify-between mb-5">
+              <h3 className="font-semibold text-base flex items-center gap-2">
+                <Settings className="w-4 h-4 text-amber-500" />
+                Ayarlar & Ses Motoru
+              </h3>
               <button onClick={() => setSettingsOpen(false)} className="p-1 rounded-lg hover:bg-black/5">
                 <X className="w-5 h-5 opacity-60" />
               </button>
             </div>
 
-            <div className="space-y-5 text-sm">
+            <div className="space-y-6 text-sm">
+              {/* Tema Seçimi */}
               <div>
-                <label className="block text-xs font-semibold opacity-70 mb-2">Tema</label>
+                <label className="block text-xs font-semibold opacity-70 mb-2">Okuma Teması</label>
                 <div className="grid grid-cols-3 gap-2">
                   {(["light", "sepia", "dark"] as const).map((t) => (
                     <button
@@ -452,6 +639,7 @@ export default function Home() {
                 </div>
               </div>
 
+              {/* Yazı Boyutu */}
               <div>
                 <label className="block text-xs font-semibold opacity-70 mb-2">Yazı Boyutu ({fontSize}px)</label>
                 <input
@@ -464,11 +652,78 @@ export default function Home() {
                 />
               </div>
 
-              <div className="p-3 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-800 dark:text-emerald-300">
-                🎙️ <strong>Microsoft Edge Neural TTS:</strong> 
-                <br />• <strong>Emel (Kadın):</strong> Varsayılan stüdyo kalitesinde Türkçe ses.
-                <br />• <strong>Ahmet (Erkek):</strong> Doğal tonlamalı Türkçe erkek sesi.
-                <br />Tamamen ücretsizdir, hiçbir API anahtarı veya kota tüketimi gerektirmez.
+              {/* Chrome Doğal Ses Köprüsü Bölümü */}
+              <div className="p-4 rounded-2xl border border-amber-500/20 bg-amber-500/5 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-xs flex items-center gap-1.5">
+                    <Radio className="w-3.5 h-3.5 text-amber-500" />
+                    Chrome Doğal Ses Köprüsü (Edge-TTS)
+                  </span>
+                  {isBridgeActive ? (
+                    <span className="text-[11px] font-medium text-emerald-600 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full flex items-center gap-1">
+                      <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                      Aktif (Bağlı)
+                    </span>
+                  ) : (
+                    <span className="text-[11px] font-medium text-amber-600 bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded-full flex items-center gap-1">
+                      <AlertCircle className="w-3 h-3 text-amber-600" />
+                      Çevrimdışı
+                    </span>
+                  )}
+                </div>
+
+                <p className="text-xs opacity-75 leading-relaxed">
+                  Google Chrome'da Microsoft Edge'in gerçek sinirsel seslerini (<strong>Emel & Ahmet</strong>) sıfır kota ve %100 ücretsiz dinlemek için köprü adresinizi bağlayın.
+                </p>
+
+                {/* Köprü URL Girişi */}
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={inputBridgeUrl}
+                    onChange={(e) => setInputBridgeUrl(e.target.value)}
+                    placeholder="https://...loca.lt veya https://...workers.dev"
+                    className="flex-1 px-3 py-1.5 rounded-xl border text-xs bg-white/70 dark:bg-black/30 outline-none focus:ring-2 focus:ring-amber-500"
+                  />
+                  <button
+                    onClick={saveBridgeUrl}
+                    disabled={isCheckingBridge}
+                    className="px-3 py-1.5 rounded-xl bg-amber-500 text-white font-medium text-xs hover:bg-amber-600 transition disabled:opacity-50"
+                  >
+                    {isCheckingBridge ? "Kontrol..." : "Kaydet"}
+                  </button>
+                </div>
+
+                {testStatus && (
+                  <div className="text-xs font-medium text-zinc-700 dark:text-zinc-300">
+                    {testStatus}
+                  </div>
+                )}
+
+                {/* Örnek Sesleri Dinleme Butonları */}
+                <div className="pt-1 flex items-center gap-2">
+                  <span className="text-xs opacity-60">Örnek Dinle:</span>
+                  <button
+                    onClick={() => testVoiceSample("tr-TR-EmelNeural")}
+                    disabled={isLoadingAudio}
+                    className="px-2.5 py-1 rounded-lg text-xs font-medium border hover:bg-amber-500/10 hover:border-amber-500 transition"
+                  >
+                    👩 Emel (Kadın)
+                  </button>
+                  <button
+                    onClick={() => testVoiceSample("tr-TR-AhmetNeural")}
+                    disabled={isLoadingAudio}
+                    className="px-2.5 py-1 rounded-lg text-xs font-medium border hover:bg-amber-500/10 hover:border-amber-500 transition"
+                  >
+                    👨 Ahmet (Erkek)
+                  </button>
+                </div>
+
+                {/* Kolay Kurulum Rehberi */}
+                <div className="text-[11px] opacity-70 pt-2 border-t border-amber-500/20 space-y-1">
+                  <div><strong>1. Yöntem (En Kolay):</strong> Sayfayı <strong>Microsoft Edge</strong> tarayıcısında açarsanız hiçbir köprü kurmadan sesler doğrudan çalar.</div>
+                  <div><strong>2. Yöntem (Chrome):</strong> Bilgisayarınızdaki <code>start-bridge.bat</code> dosyasını çift tıklayıp tünel adresini buraya yapıştırınız.</div>
+                </div>
               </div>
             </div>
           </div>

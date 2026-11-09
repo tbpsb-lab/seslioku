@@ -1,0 +1,12 @@
+{
+  "name": "seslioku-tts",
+  "version": "1.0.0",
+  "description": "SesliOku Edge-TTS Bridge on Cloudflare Workers",
+  "scripts": {
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240405.0",
+    "wrangler": "^3.50.0"
+  }
+}
