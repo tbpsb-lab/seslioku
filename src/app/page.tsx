@@ -47,6 +47,10 @@ export default function Home() {
   const [bookmarks, setBookmarks] = useState<{ page: number; paragraph: number }[]>([]);
   const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
 
+  const hasEdgeNeural = availableVoices.some(
+    (v) => v.name.toLowerCase().includes("emel") || v.name.toLowerCase().includes("ahmet")
+  );
+
   // Prevent Garbage Collection in Chromium browsers
   const activeUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
 
@@ -109,8 +113,11 @@ export default function Home() {
         trVoices.find((v) => v.name.toLowerCase().includes("tolga") || v.name.toLowerCase().includes("erkek") || v.name.toLowerCase().includes("male")) ||
         trVoices[0];
 
-      if (maleVoice) utterance.voice = maleVoice;
-      utterance.pitch = 0.88; // Erkek ses derinliği
+      if (maleVoice) {
+        utterance.voice = maleVoice;
+        // Gerçek sinirsel ses ise doğal tonlamayı bozmamak için pitch 1.0 kalır
+        utterance.pitch = maleVoice.name.toLowerCase().includes("ahmet") ? 1.0 : 0.88;
+      }
     } else {
       // Kadın Ses Seçimi (Varsayılan): Microsoft Emel Online (Natural) veya Kadın sesi
       const femaleVoice =
@@ -118,8 +125,11 @@ export default function Home() {
         trVoices.find((v) => v.name.toLowerCase().includes("kadın") || v.name.toLowerCase().includes("female")) ||
         trVoices[0];
 
-      if (femaleVoice) utterance.voice = femaleVoice;
-      utterance.pitch = 1.12; // Kadın ses berraklığı ve tonlaması
+      if (femaleVoice) {
+        utterance.voice = femaleVoice;
+        // Gerçek sinirsel ses ise doğal tonlamayı bozmamak için pitch 1.0 kalır
+        utterance.pitch = femaleVoice.name.toLowerCase().includes("emel") ? 1.0 : 1.12;
+      }
     }
 
     utterance.onstart = () => {
@@ -245,6 +255,18 @@ export default function Home() {
           </button>
         </div>
       </header>
+
+      {/* Doğal Sinirsel Ses Durum Bilgilendirme Şeridi */}
+      {hasEdgeNeural ? (
+        <div className="bg-emerald-500/10 border-b border-emerald-500/20 px-4 py-2 text-center text-xs text-emerald-800 dark:text-emerald-300 flex items-center justify-center gap-2 font-sans font-medium">
+          <Sparkles className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+          <span>Microsoft Edge Sinirsel (Neural) Ses Motoru Aktif: <strong>Emel & Ahmet (Stüdyo Kalitesi)</strong></span>
+        </div>
+      ) : (
+        <div className="bg-amber-500/10 border-b border-amber-500/20 px-4 py-2 text-center text-xs text-amber-900 dark:text-amber-200 flex items-center justify-center gap-2 font-sans">
+          <span>💡 <strong>Önemli İpucu:</strong> Microsoft Edge'in ödüllü yapay zeka sesleri (<strong>Emel & Ahmet</strong>) için sayfayı <strong>Microsoft Edge</strong> tarayıcısında açınız. Chrome'da tarayıcı kısıtlaması nedeniyle sistem sesi çalınır.</span>
+        </div>
+      )}
 
       {/* Ana Okuma Alanı */}
       <main className="flex-1 max-w-3xl w-full mx-auto px-6 py-10 flex flex-col justify-start">
